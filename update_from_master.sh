@@ -17,6 +17,7 @@ cd ..
 git checkout gh-pages
 mv html/* .
 rm -rf html
+rm -rf docs
 git add .
 git commit -m "Added new docs (built from ${branch})"
 
@@ -43,4 +44,4 @@ git add -u .
 
 git commit -m "Prepared html files for output on github pages, which doesn't allow directories that begin with underscores."
 
-git push origin -f gh-pages
+git push -f origin gh-pages
