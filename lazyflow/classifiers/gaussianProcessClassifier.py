@@ -28,25 +28,68 @@ class GaussianProcessClassifierFactory(LazyflowVectorwiseClassifierFactoryABC):
     def __init__(self, *args, **kwargs):
         self._args = args
         self._kwargs = kwargs
-    
+
+    def train_one_vs_all(self, X, Y, nclasses):
+        models = []
+        assert len(np.unique(Y)) == nclasses
+
+        for c in range(nclasses):
+            print
+            print 'class', c, 'vs. all'
+            Y_class = np.zeros(Y.shape)
+            Y_class[Y==c] = 1
+            classifier = GPy.models.SparseGPClassification(X, Y_class, **self._kwargs)
+            classifier.tie_params('.*len')
+
+            best = (None, None, None)
+            xDim = np.sqrt(X.shape[1])
+            lengthscales = [ xDim, xDim / 2., xDim / 4., xDim * 2, xDim * 4 ]
+
+            for lengthscale in lengthscales:
+                classifier.kern = GPy.kern.rbf(X.shape[1], lengthscale=lengthscale)
+                classifier.update_likelihood_approximation()
+
+                for i in range(self.parameters['max_iters_ep']):
+                    classifier.optimize(max_iters=self.parameters['max_iters_hyperparameters'])
+
+                print 'log likelihood:', classifier.log_likelihood(), 'lengthscale:', lengthscale
+
+                if best[1] is None or classifier.log_likelihood() > best[1]:
+                    best = (lengthscale, classifier.log_likelihood(), copy.copy(classifier.getstate()))
+
+            print '-----'
+            classifier.setstate(best[2])
+            classifier.update_likelihood_approximation()
+            for i in range(self.parameters['max_iters_ep']):
+                classifier.optimize(max_iters=self.parameters['max_iters_hyperparameters'])
+
+            print 'log likelihood:', classifier.log_likelihood(), 'initial lengthscale:', best[0]
+
+            models.append(classifier)
+
+        return models
+
+
     def create_and_train(self, X, y):
         logger.debug( 'training single-threaded GaussianProcessClassifier' )
         
         # Save for future reference
         known_labels = numpy.unique(y)
-        
+
         X = numpy.asarray(X, numpy.float32)
         y = numpy.asarray(y, numpy.uint32)
+
+        if np.isnan(X).any():
+            print 'replacing nans by zeros'
+            X[np.isnan(X)] = 0
 
         print np.sum(np.std(X,axis=0)==0), 'of', X.shape[1], 'features are constant'
 
         if y.ndim == 1:
             y = y[:, numpy.newaxis]
 
-        y-=1 # FIXME: for the binary case, we need classes 0 and 1 rather than 1 and 2. Fix for the multi-label case
         assert X.ndim == 2
         assert len(X) == len(y)
-        assert all(i in (0,1) for i in numpy.unique(y))
 
         if self.parameters['kernel'] == 'rbf':
             self._kwargs["kernel"] = kern.rbf(X.shape[1])
@@ -59,48 +102,9 @@ class GaussianProcessClassifierFactory(LazyflowVectorwiseClassifierFactoryABC):
         self._kwargs["normalize_Y"] = bool(self.parameters['normalize_Y'])
         self._kwargs["num_inducing"] = self.parameters['num_inducing']
 
-        classifier = GPy.models.SparseGPClassification(X,
-                                                       y,
-                                                        **self._kwargs)
+        models = self.train_one_vs_all(X, y, len(known_labels))
 
-        # constrain all lengthscale parameters to be positive
-        classifier.tie_params('.*len')
-        # classifier.update_likelihood_approximation()
-        # classifier.ensure_default_constraints()
-
-        best = (None, None, None)
-
-        xDim = np.sqrt(X.shape[1])
-        lengthscales = [ xDim, xDim / 2., xDim / 4., xDim * 2, xDim * 4 ]
-
-        for lengthscale in lengthscales:
-            # for j in range(self.parameters['max_iters_initializations']):
-            #     print 'randomize initialization'
-            #     classifier.randomize()
-            classifier.kern = kern.rbf(X.shape[1], lengthscale=lengthscale)
-            classifier.update_likelihood_approximation()
-
-            for i in range(self.parameters['max_iters_ep']):
-                print 'ep iteration'
-                classifier.optimize(max_iters=self.parameters['max_iters_hyperparameters'])
-
-            print 'log likelihood:', classifier.log_likelihood(), 'lengthscale:', lengthscale
-            if best[1] is None or classifier.log_likelihood() > best[1]:
-                print 'that is better, setting best to', lengthscale
-                best = (lengthscale, classifier.log_likelihood(), copy.copy(classifier.getstate()))
-        print '-----'
-
-        # classifier.kern = kern.rbf(X.shape[1], lengthscale=best[0])
-        classifier.setstate(best[2])
-
-        classifier.update_likelihood_approximation()
-        # classifier.optimize(max_iters=1)
-        for i in range(self.parameters['max_iters_ep']):
-            classifier.optimize(max_iters=self.parameters['max_iters_hyperparameters'])
-
-        print 'log likelihood:', classifier.log_likelihood(), 'lengthscale:', best[0]
-
-        return GaussianProcessClassifier( classifier, known_labels )
+        return GaussianProcessClassifier( models, known_labels )
 
     @property
     def description(self):
@@ -112,41 +116,70 @@ class GaussianProcessClassifier(LazyflowVectorwiseClassifierABC):
     """
     Adapt the vigra RandomForest class to the interface lazyflow expects.
     """
-    def __init__(self, gpc, known_labels):
+    def __init__(self, gpcs, known_labels):
         self._known_labels = known_labels
-        self._gpc = gpc
-    
+        self._gpcs = gpcs
+
+
+    @staticmethod
+    def softmax(matrix):
+        e = np.exp(np.array(matrix))
+        return e / np.sum(e, axis=0)
+
+    @staticmethod
+    def predict_one_vs_all(Xtest, models, with_raw=False):
+        Xtest = numpy.asarray(Xtest, dtype=numpy.float32)
+        nclasses = len(models)
+        predictions = []
+        variances = []
+        for c in range(nclasses):
+            if with_raw:
+                Xscaled = (Xtest.copy() - models[c]._Xoffset) / models[c]._Xscale
+                mu, _var = models[c].predict(Xscaled)
+            pred, var, _, _ = models[c].predict(numpy.asarray(Xtest, dtype=numpy.float32))
+            predictions.append(pred)
+            variances.append(var)
+        pred_softmax = GaussianProcessClassifier.softmax(np.array(predictions)).squeeze().T
+        var_softmax = GaussianProcessClassifier.softmax(np.array(variances)).squeeze().T
+
+        assert pred_softmax.shape == var_softmax.shape
+        assert pred_softmax.shape == (len(Xtest), len(models))
+        assert np.allclose(np.sum(pred_softmax, axis=1), 1) # normalization
+
+        return pred_softmax, var_softmax
+
+
     def predict_probabilities(self, X, with_variance = False):
-        logger.debug( 'predicting single-threaded vigra RF' )
-        
-        X = numpy.asarray(X, dtype=numpy.float32)
-        Xnew = (X.copy() - self._gpc._Xoffset) / self._gpc._Xscale
-        mu, _var = self._gpc._raw_predict(Xnew)
-        
-        probs,var,_,_ = self._gpc.predict(numpy.asarray(X, dtype=numpy.float32) )
-        
-        #here, mu == inverse_sigmoid(probs) == GPy.util.univariate_Gaussian.inv_std_norm_cdf(probs)*numpy.sqrt(1+_var)
-        
-        #we get the probability p for label 1 here,
-        #so we complete the table by adding the probability for label 0, which is 1-p
+        logger.debug( 'predicting single-threaded GPy Gaussian Process classifier' )
+
+        probs, var = self.predict_one_vs_all(X, self._gpcs)
+
         if with_variance:
-            return numpy.concatenate((1-probs,probs),axis = 1),_var
-        return  numpy.concatenate((1-probs,probs),axis = 1)
+            print 'WARNING: var is per binary GPC'
+            return probs, var
+        return probs
     
     @property
     def known_classes(self):
         return self._known_labels
     
     def serialize_hdf5(self,h5py_group):
-        pickled = self._gpc.pickles()
-        pickled = pickled.replace("\x00","!super-awkward replacement hack!")
-        h5py_group.create_dataset("GPCpickle",data=pickled)
+        for i, gpc in enumerate(self._gpcs):
+            pickled = gpc.pickles()
+            pickled = pickled.replace("\x00","!super-awkward replacement hack!")
+            h5py_group.create_dataset("GPCpickle_%03d" % i, data=pickled)
         
     def deserialize_hdf5(self,h5py_group):
-        assert "GPCpickle" in h5py_group
-        s = h5py_group["GPCpickle"]
-        s = s.replace("!super-awkward replacement hack!","\x00")
-        classifier = pickle.loads(s)
-        return classifier
+        # assert "GPCpickle" in h5py_group
+        gpcs = []
+        for k in sort(h5py_group.keys()):
+            if "GPCpickle" not in k:
+                continue
+            s = h5py_group[k]
+            s = s.replace("!super-awkward replacement hack!", "\x00")
+            assert len(gpcs) == int(k.split('_')[-1])
+            gpcs.append(pickle.loads(s))
+
+        return gpcs
 
 assert issubclass( GaussianProcessClassifier, LazyflowVectorwiseClassifierABC )
