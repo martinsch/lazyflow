@@ -37,7 +37,7 @@ class GaussianProcessClassifierFactory(LazyflowVectorwiseClassifierFactoryABC):
             print
             print 'class', c, 'vs. all'
             Y_class = np.zeros(Y.shape)
-            Y_class[Y==c] = 1
+            Y_class[Y==(c+1)] = 1  # ilastik classes start at 1
             classifier = GPy.models.SparseGPClassification(X, Y_class, **self._kwargs)
             classifier.tie_params('.*len')
 
@@ -45,25 +45,36 @@ class GaussianProcessClassifierFactory(LazyflowVectorwiseClassifierFactoryABC):
             xDim = np.sqrt(X.shape[1])
             lengthscales = [ xDim, xDim / 2., xDim / 4., xDim * 2, xDim * 4 ]
 
+
             for lengthscale in lengthscales:
                 classifier.kern = GPy.kern.rbf(X.shape[1], lengthscale=lengthscale)
-                classifier.update_likelihood_approximation()
+                try:
+                    classifier.update_likelihood_approximation()
+                    for i in range(self.parameters['max_iters_ep']):
+                        classifier.optimize(max_iters=self.parameters['max_iters_hyperparameters'])
 
+                    print 'log likelihood:', classifier.log_likelihood(), 'lengthscale:', lengthscale
+
+                    if best[1] is None or classifier.log_likelihood() > best[1]:
+                        best = (lengthscale, classifier.log_likelihood(), copy.copy(classifier.getstate()))
+                except Exception as e:
+                    print e
+                    pass
+
+            print '-----'
+            if best[0] is None:
+                raise Exception, 'no classifier'
+
+            classifier.setstate(best[2])
+            try:
+                classifier.update_likelihood_approximation()
                 for i in range(self.parameters['max_iters_ep']):
                     classifier.optimize(max_iters=self.parameters['max_iters_hyperparameters'])
 
-                print 'log likelihood:', classifier.log_likelihood(), 'lengthscale:', lengthscale
-
-                if best[1] is None or classifier.log_likelihood() > best[1]:
-                    best = (lengthscale, classifier.log_likelihood(), copy.copy(classifier.getstate()))
-
-            print '-----'
-            classifier.setstate(best[2])
-            classifier.update_likelihood_approximation()
-            for i in range(self.parameters['max_iters_ep']):
-                classifier.optimize(max_iters=self.parameters['max_iters_hyperparameters'])
-
-            print 'log likelihood:', classifier.log_likelihood(), 'initial lengthscale:', best[0]
+                print 'log likelihood:', classifier.log_likelihood(), 'initial lengthscale:', best[0]
+            except:
+                print 'WARNING: could not optimize the best lengthscale'
+                pass
 
             models.append(classifier)
 
@@ -124,10 +135,14 @@ class GaussianProcessClassifier(LazyflowVectorwiseClassifierABC):
     @staticmethod
     def softmax(matrix):
         e = np.exp(np.array(matrix))
-        return e / np.sum(e, axis=0)
+        return e / np.sum(e, axis=1, dtype=np.float32)[..., np.newaxis]
 
     @staticmethod
-    def predict_one_vs_all(Xtest, models, with_raw=False):
+    def normalize(matrix):
+        return np.array(matrix) / np.sum(matrix, axis=1, dtype=np.float32)[..., np.newaxis]
+
+    @staticmethod
+    def predict_one_vs_all(Xtest, models, with_raw=False, with_softmax=False):
         Xtest = numpy.asarray(Xtest, dtype=numpy.float32)
         nclasses = len(models)
         predictions = []
@@ -139,14 +154,22 @@ class GaussianProcessClassifier(LazyflowVectorwiseClassifierABC):
             pred, var, _, _ = models[c].predict(numpy.asarray(Xtest, dtype=numpy.float32))
             predictions.append(pred)
             variances.append(var)
-        pred_softmax = GaussianProcessClassifier.softmax(np.array(predictions)).squeeze().T
-        var_softmax = GaussianProcessClassifier.softmax(np.array(variances)).squeeze().T
 
-        assert pred_softmax.shape == var_softmax.shape
-        assert pred_softmax.shape == (len(Xtest), len(models))
-        assert np.allclose(np.sum(pred_softmax, axis=1), 1) # normalization
+        result_pred = np.array(predictions).squeeze().T
+        result_var = np.array(variances).squeeze().T
 
-        return pred_softmax, var_softmax
+        if with_softmax:
+            # be aware that this does not give very crisp decisions
+            result_pred = GaussianProcessClassifier.softmax(result_pred)
+        else:
+            result_pred = GaussianProcessClassifier.normalize(result_pred)
+
+        assert np.allclose(np.sum(result_pred, axis=1), 1)    # normalization
+
+        assert result_pred.shape == result_var.shape
+        assert result_pred.shape == (len(Xtest), len(models))
+
+        return result_pred, result_var
 
 
     def predict_probabilities(self, X, with_variance = False):
