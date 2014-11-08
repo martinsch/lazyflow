@@ -37,7 +37,7 @@ class GaussianProcessClassifierFactory(LazyflowVectorwiseClassifierFactoryABC):
 
         best = (None, None, None)
         xDim = np.sqrt(X.shape[1])
-        lengthscales = [ xDim, xDim / 2., xDim / 4., xDim * 2, xDim * 4 ]
+        lengthscales = [ xDim, xDim / 2., xDim / 4., xDim * 2, xDim * 4, 10, 200 ]
 
 
         for lengthscale in lengthscales:
@@ -100,11 +100,15 @@ class GaussianProcessClassifierFactory(LazyflowVectorwiseClassifierFactoryABC):
             print 'replacing nans by zeros'
             X[np.isnan(X)] = 0
 
+        if len(X.shape) == 1:
+            X = X[..., np.newaxis]
+
         print np.sum(np.std(X,axis=0)==0), 'of', X.shape[1], 'features are constant'
 
         if y.ndim == 1:
             y = y[:, numpy.newaxis]
 
+        print X.shape
         assert X.ndim == 2
         assert len(X) == len(y)
 
@@ -138,10 +142,12 @@ class GaussianProcessClassifier(LazyflowVectorwiseClassifierABC):
     """
     Adapt the vigra RandomForest class to the interface lazyflow expects.
     """
-    def __init__(self, gpcs, known_labels):
+
+    pickle_replace = ("\x00", "!super-awkward replacement hack!")
+
+    def __init__(self, gpcs=None, known_labels=None):
         self._known_labels = known_labels
         self._gpcs = gpcs
-
 
     @staticmethod
     def softmax(matrix):
@@ -197,6 +203,9 @@ class GaussianProcessClassifier(LazyflowVectorwiseClassifierABC):
             probs, var = self.predict_one_vs_all(X, self._gpcs)
             print 'WARNING: var is per binary GPC'
 
+        probs = probs
+        var = var
+
         if with_variance:
             return probs, var
         return probs
@@ -205,22 +214,29 @@ class GaussianProcessClassifier(LazyflowVectorwiseClassifierABC):
     def known_classes(self):
         return self._known_labels
     
-    def serialize_hdf5(self,h5py_group):
+    def serialize_hdf5(self, h5py_group):
         for i, gpc in enumerate(self._gpcs):
             pickled = gpc.pickles()
-            pickled = pickled.replace("\x00","!super-awkward replacement hack!")
+            pickled = pickled.replace(*self.pickle_replace)
             h5py_group.create_dataset("GPCpickle_%03d" % i, data=pickled)
+            try:
+                h5py_group.create_dataset("known_labels", data=self._known_labels)
+            except:
+                pass
         
-    def deserialize_hdf5(self,h5py_group):
+    def deserialize_hdf5(self, h5py_group):
         # assert "GPCpickle" in h5py_group
         gpcs = []
-        for k in sort(h5py_group.keys()):
+        for k in sorted(h5py_group.keys()):
             if "GPCpickle" not in k:
                 continue
-            s = h5py_group[k]
-            s = s.replace("!super-awkward replacement hack!", "\x00")
+            s = h5py_group[k].value
+            s = s.replace(*(self.pickle_replace[::-1]))
             assert len(gpcs) == int(k.split('_')[-1])
             gpcs.append(pickle.loads(s))
+
+        self._gpcs = gpcs
+        self._known_labels = np.array(h5py_group["known_labels"]).tolist()
 
         return gpcs
 
