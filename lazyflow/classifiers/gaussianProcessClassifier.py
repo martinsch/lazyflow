@@ -37,7 +37,7 @@ class GaussianProcessClassifierFactory(LazyflowVectorwiseClassifierFactoryABC):
 
         best = (None, None, None)
         xDim = np.sqrt(X.shape[1])
-        lengthscales = [ xDim, xDim / 2., xDim / 4., xDim * 2, xDim * 4, 10, 200 ]
+        lengthscales = [ xDim, xDim / 2., xDim / 4., xDim * 2, xDim * 4 ]
 
 
         for lengthscale in lengthscales:
@@ -201,7 +201,7 @@ class GaussianProcessClassifier(LazyflowVectorwiseClassifierABC):
         else:
             assert len(self._gpcs) == len(self._known_labels)
             probs, var = self.predict_one_vs_all(X, self._gpcs)
-            print 'WARNING: var is per binary GPC'
+            #print 'WARNING: var is per binary GPC'
 
         probs = probs
         var = var
@@ -238,6 +238,6 @@ class GaussianProcessClassifier(LazyflowVectorwiseClassifierABC):
         self._gpcs = gpcs
         self._known_labels = np.array(h5py_group["known_labels"]).tolist()
 
-        return gpcs
+        return self
 
 assert issubclass( GaussianProcessClassifier, LazyflowVectorwiseClassifierABC )
