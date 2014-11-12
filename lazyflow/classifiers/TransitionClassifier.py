@@ -10,7 +10,17 @@ class TransitionClassifier:
     @staticmethod
     def getFeatures(traxel1, traxel2):
         # only squared distances for now
-        return pow(np.linalg.norm( np.array(traxel1.get_feature_array("RegionCenter")) - np.array(traxel2.get_feature_array("RegionCenter")) ),2.)
+        try:
+            feat1 = np.array(traxel1.get_feature_array("RegionCenter"))
+            feat2 = np.array(traxel2.get_feature_array("RegionCenter"))
+        except:
+            raise Exception, 'RegionCenter is not available in traxels'
+
+        return TransitionClassifier.getSquaredDistance(feat1, feat2)
+
+    @staticmethod
+    def getSquaredDistance(feat1, feat2):
+        return pow(np.linalg.norm( np.array(feat1) - np.array(feat2) ),2.)
 
     def predict(self, traxel1, traxel2):
         """
@@ -18,6 +28,20 @@ class TransitionClassifier:
         based on transition classifier (gaussian process classifier)
         """
         x = self.getFeatures(traxel1, traxel2)
+        prob, var = self.classifier.predict_probabilities(x, with_variance=True)
+        prob = prob.squeeze().tolist()
+        var = var.squeeze().tolist()
+
+        return prob, var
+
+    def predictWithCoordinates(self, x1, y1, z1, x2, y2, z2):
+        """
+        returns probability and variance of transition from Traxel1 to Traxel2
+        based on transition classifier (gaussian process classifier)
+        """
+        feat1 = np.array([x1, y1, z1])
+        feat2 = np.array([x2, y2, z2])
+        x = self.getSquaredDistance(feat1, feat2)
         prob, var = self.classifier.predict_probabilities(x, with_variance=True)
         prob = prob.squeeze().tolist()
         var = var.squeeze().tolist()
