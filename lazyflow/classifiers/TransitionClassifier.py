@@ -34,7 +34,10 @@ class TransitionClassifier:
 
         return prob, var
 
-    def predictWithCoordinates(self, x1, y1, z1, x2, y2, z2):
+    def predictRawWithCoordinates(self, x1, y1, z1, x2, y2, z2):
+        return self.predictWithCoordinates(x1, y1, z1, x2, y2, z2, with_raw=True)
+
+    def predictWithCoordinates(self, x1, y1, z1, x2, y2, z2, with_raw=False):
         """
         returns probability and variance of transition from Traxel1 to Traxel2
         based on transition classifier (gaussian process classifier)
@@ -42,7 +45,7 @@ class TransitionClassifier:
         feat1 = np.array([x1, y1, z1])
         feat2 = np.array([x2, y2, z2])
         x = self.getSquaredDistance(feat1, feat2)
-        prob, var = self.classifier.predict_probabilities(x, with_variance=True)
+        prob, var = self.classifier.predict_probabilities(x, with_variance=True, with_raw=with_raw)
         prob = prob.squeeze().tolist()
         var = var.squeeze().tolist()
 

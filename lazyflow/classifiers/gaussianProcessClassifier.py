@@ -160,21 +160,21 @@ class GaussianProcessClassifier(LazyflowVectorwiseClassifierABC):
 
     @staticmethod
     def predict_binary(Xtest, model, with_raw=False):
-        if with_raw:
-            Xscaled = (Xtest.copy() - model._Xoffset) / model._Xscale
-            mu, _var = model.predict(Xscaled)
-        pred, var, _, _ = model.predict(numpy.asarray(Xtest, dtype=numpy.float32))
+        # if with_raw:
+        #     Xscaled = (Xtest.copy() - model._Xoffset) / model._Xscale
+        #     mu, _var = model.predict(Xscaled)
+        pred, var, _, _ = model.predict(numpy.asarray(Xtest, dtype=numpy.float32), with_raw=with_raw)
 
         return pred, var
 
     @staticmethod
-    def predict_one_vs_all(Xtest, models, with_normalization=False):
+    def predict_one_vs_all(Xtest, models, with_normalization=False, with_raw=False):
         Xtest = numpy.asarray(Xtest, dtype=numpy.float32)
         nclasses = len(models)
         predictions = []
         variances = []
         for c in range(nclasses):
-            pred, var = GaussianProcessClassifier.predict_binary(Xtest, models[c])
+            pred, var = GaussianProcessClassifier.predict_binary(Xtest, models[c], with_raw=with_raw)
             predictions.append(pred)
             variances.append(var)
 
@@ -182,6 +182,7 @@ class GaussianProcessClassifier(LazyflowVectorwiseClassifierABC):
         result_var = np.array(variances).squeeze().T
 
         if with_normalization:
+            assert not with_raw
             result_pred = GaussianProcessClassifier.normalize(result_pred)
             assert np.allclose(np.sum(result_pred, axis=1), 1)    # normalization
 
@@ -191,16 +192,17 @@ class GaussianProcessClassifier(LazyflowVectorwiseClassifierABC):
         return result_pred, result_var
 
 
-    def predict_probabilities(self, X, with_variance = False):
+    def predict_probabilities(self, X, with_variance=False, with_raw=True):
         logger.debug( 'predicting single-threaded GPy Gaussian Process classifier' )
 
+        with_raw = True
         if len(self._known_labels) == 2:
             assert len(self._gpcs) == 1
-            probs, var = self.predict_binary(X, self._gpcs[0])
+            probs, var = self.predict_binary(X, self._gpcs[0], with_raw=with_raw)
             probs = np.hstack((1 - probs, probs))
         else:
             assert len(self._gpcs) == len(self._known_labels)
-            probs, var = self.predict_one_vs_all(X, self._gpcs)
+            probs, var = self.predict_one_vs_all(X, self._gpcs, with_raw=with_raw)
             #print 'WARNING: var is per binary GPC'
 
         probs = probs
@@ -216,14 +218,26 @@ class GaussianProcessClassifier(LazyflowVectorwiseClassifierABC):
     
     def serialize_hdf5(self, h5py_group):
         for i, gpc in enumerate(self._gpcs):
+            print 'pickling GPC', i
             pickled = gpc.pickles()
             pickled = pickled.replace(*self.pickle_replace)
-            h5py_group.create_dataset("GPCpickle_%03d" % i, data=pickled)
             try:
-                h5py_group.create_dataset("known_labels", data=self._known_labels)
+                del h5py_group["GPCpickle_%03d" % i]
             except:
                 pass
-        
+            h5py_group.create_dataset("GPCpickle_%03d" % i, data=pickled)
+
+        try:
+            del h5py_group["known_labels"]
+        except:
+            pass
+
+        try:
+            h5py_group.create_dataset("known_labels", data=self._known_labels)
+        except:
+            pass
+
+
     def deserialize_hdf5(self, h5py_group):
         # assert "GPCpickle" in h5py_group
         gpcs = []
